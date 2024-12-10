@@ -1,0 +1,139 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Consumer account Lake Formation setups for cross-account sharing scenario
+
+Parameters:
+  ConsumerDatalakeAdminUserName:
+    Type: String
+    Description: IAM user name to be created for data lake admin.
+    Default: DatalakeAdminConsumer
+    AllowedPattern: '[\w+=,.@-]+'
+    MinLength: '1'
+    MaxLength: '64'
+    ConstraintDescription: the user name must be between 1 and 64 characters
+  ConsumerDatalakeAdminUserPassword:
+    Type: String
+    Description: IAM user console password for data lake admin.
+    NoEcho: 'true'
+    AllowedPattern: '[\u0009\u000A\u000D\u0020-\u00FF]+'
+    MinLength: '1'
+    MaxLength: '128'
+    ConstraintDescription: the password must be between 1 and 128 characters
+  DataAnalystUserName:
+    Type: String
+    Description: IAM user name to be created for data analyst.
+    Default: DataAnalyst
+    AllowedPattern: '[\w+=,.@-]+'
+    MinLength: '1'
+    MaxLength: '64'
+    ConstraintDescription: the user name must be between 1 and 64 characters
+  DataAnalystUserPassword:
+    Type: String
+    Description: IAM user console password for data analyst.
+    NoEcho: 'true'
+    AllowedPattern: '[\u0009\u000A\u000D\u0020-\u00FF]+'
+    MinLength: '1'
+    MaxLength: '128'
+    ConstraintDescription: the password must be between 1 and 128 characters
+  DatabaseName:
+    Type: String
+    Description: Lake Formation database name to be created to store a table
+    Default: lakeformation_tutorial_cross_account_database_consumer
+  AthenaQueryResultS3BucketName:
+    Type: String
+    Description: Name of the S3 bucket that stores Athena query results
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      -
+        Label:
+          default: IAM User Configuration
+        Parameters:
+          - ConsumerDatalakeAdminUserName
+          - ConsumerDatalakeAdminUserPassword
+          - DataAnalystUserName
+          - DataAnalystUserPassword
+          - DatabaseName
+          - AthenaQueryResultS3BucketName
+
+Resources:
+  DatalakeAdminUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Ref ConsumerDatalakeAdminUserName
+      LoginProfile:
+        Password: !Ref ConsumerDatalakeAdminUserPassword
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSLakeFormationDataAdmin
+        - arn:aws:iam::aws:policy/AWSLakeFormationCrossAccountManager
+        - arn:aws:iam::aws:policy/AmazonAthenaFullAccess
+        - arn:aws:iam::aws:policy/IAMReadOnlyAccess
+
+  DataAnalystUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Ref DataAnalystUserName
+      LoginProfile:
+        Password: !Ref DataAnalystUserPassword
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonAthenaFullAccess
+
+  LFDataLakeSettings:
+    Type: AWS::LakeFormation::DataLakeSettings
+    Properties:
+      Admins:
+        - DataLakePrincipalIdentifier: !GetAtt 'DatalakeAdminUser.Arn'
+
+  RAMResourceSharePolicy:
+    DependsOn:
+      - DatalakeAdminUser
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub RAMResourceSharePolicy-${AWS::StackName}
+      PolicyDocument: 
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Action:
+              - 'ram:AcceptResourceShareInvitation'
+              - 'ram:RejectResourceShareInvitation'
+              - 'ec2:DescribeAvailabilityZones'
+              - 'ram:EnableSharingWithAwsOrganization'
+            Resource: '*'
+      Users:
+        - !Ref DatalakeAdminUser
+
+  AthenaQueryResultS3Policy:
+    DependsOn:
+      - DataAnalystUser
+      - DatalakeAdminUser
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub AthenaQueryResultS3Policy-${AWS::StackName}
+      PolicyDocument: 
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Action:
+              - s3:GetBucketLocation
+              - s3:GetObject
+              - s3:ListBucket
+              - s3:ListBucketMultipartUploads
+              - s3:AbortMultipartUpload
+              - s3:PutObject
+              - s3:ListMultipartUploadParts
+            Resource: 
+              - !Sub arn:aws:s3:::${AthenaQueryResultS3BucketName}
+              - !Sub arn:aws:s3:::${AthenaQueryResultS3BucketName}/*
+      Users:
+        - !Ref DataAnalystUser
+        - !Ref DatalakeAdminUser
+
+  LakeFormationDatabase:
+    Type: AWS::Glue::Database
+    Properties: 
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput: 
+        Name: !Ref DatabaseName

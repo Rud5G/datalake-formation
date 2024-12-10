@@ -1,0 +1,283 @@
+
+AWSTemplateFormatVersion: 2010-09-09
+Description: Lake Formation Initial Set up of IAM Roles and Settings.
+
+Parameters:
+  DatalakeAdminName:
+    Type: String
+    Description: IAM user name to be created for this blog tutorial.
+    Default: DatalakeAdmin1
+    AllowedPattern: '[\w+=,.@-]+'
+    MinLength: '1'
+    MaxLength: '64'
+    ConstraintDescription: the user name must be between 1 and 64 characters
+  DatalakeAdminPassword:
+    Type: String
+    Description: IAM user console password for this blog tutorial.
+    NoEcho: 'true'
+    AllowedPattern: '[\u0009\u000A\u000D\u0020-\u00FF]+'
+    MinLength: '1'
+    MaxLength: '128'
+    ConstraintDescription: the password must be between 1 and 128 characters
+  DatalakeUser1Name:
+    Type: String
+    Description: IAM user name to be created for this blog tutorial.
+    Default: DatalakeUser1
+    AllowedPattern: '[\w+=,.@-]+'
+    MinLength: '1'
+    MaxLength: '64'
+    ConstraintDescription: the user name must be between 1 and 64 characters
+  DatalakeUser1Password:
+    Type: String
+    Description: IAM user console password for this blog tutorial.
+    NoEcho: 'true'
+    AllowedPattern: '[\u0009\u000A\u000D\u0020-\u00FF]+'
+    MinLength: '1'
+    MaxLength: '128'
+    ConstraintDescription: the password must be between 1 and 128 characters
+  DataLakeBucketName:
+    Type: String
+    Description: S3 bucket name to be created to store data for data lake. The name needs to be globally unique.
+
+# grouping of input parameters by relevance
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      -
+        Label:
+          default: IAM User and Role Configuration
+        Parameters:
+          - DatalakeAdminName
+          - DatalakeAdminPassword
+          - DatalakeUser1Name
+          - DatalakeUser1Password
+
+      -
+        Label:
+          default: Data Lake Configuration
+        Parameters:
+          - DataLakeBucketName
+
+Resources:
+# new S3 bucket for datalake
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref DataLakeBucketName
+      AccessControl: Private
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: True
+        BlockPublicPolicy: True
+        IgnorePublicAcls: True
+        RestrictPublicBuckets: True
+
+# create an IAM role to work with LF-Glue workflows feature
+  LakeFormationWorkflowRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: LFWorkflowRole
+      Description: Permissions to use LF Workflow feature
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lakeformation.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSGlueServiceRole'
+      Policies:
+      - PolicyName: LFWorkflowPermissions
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: "Allow"
+            Action:
+              - lakeformation:GetDataAccess
+              - lakeformation:GrantPermissions
+            Resource: "*"
+
+# policy to iam:PassRole itself to be attached to LakeFormationWorkflowRole
+  LFWorkflowPassRolePolicy:
+    DependsOn:
+      - LakeFormationWorkflowRole
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: LFWorkflowSelfPassRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Action:
+              - iam:PassRole
+            Resource:
+              - !Sub arn:aws:iam::${AWS::AccountId}:role/${LakeFormationWorkflowRole}
+      Roles:
+        - !Ref LakeFormationWorkflowRole
+
+# Creating the DatalakeAdmin User
+  DatalakeAdmin:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Ref DatalakeAdminName
+      LoginProfile:
+        Password: !Ref DatalakeAdminPassword
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSLakeFormationDataAdmin
+        - arn:aws:iam::aws:policy/AWSGlueConsoleFullAccess
+        - arn:aws:iam::aws:policy/CloudWatchLogsReadOnlyAccess
+        - arn:aws:iam::aws:policy/AWSLakeFormationCrossAccountManager
+        - arn:aws:iam::aws:policy/AmazonAthenaFullAccess
+        - arn:aws:iam::aws:policy/AWSCloudFormationReadOnlyAccess
+      Policies:
+        - PolicyName: LakeFormationSLR
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - iam:CreateServiceLinkedRole
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    "iam:AWSServiceName": "lakeformation.amazonaws.com"
+              - Effect: "Allow"
+                Action:
+                  - iam:PutRolePolicy
+                Resource:
+                  - !Sub arn:aws:iam::${AWS::AccountId}:role/aws-service-role/lakeformation.amazonaws.com/AWSServiceRoleForLakeFormationDataAccess
+
+  LFUserPassRolePolicy:
+    DependsOn:
+      - DatalakeAdmin
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: LFUserPassRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Action:
+              - iam:PassRole
+            Resource:
+              - !Sub arn:aws:iam::${AWS::AccountId}:role/aws-service-role/lakeformation.amazonaws.com/AWSServiceRoleForLakeFormationDataAccess
+              - !Sub arn:aws:iam::${AWS::AccountId}:role/${LakeFormationWorkflowRole}
+      Users:
+        - !Ref DatalakeAdmin
+
+  LFRamAccessPolicy:
+    DependsOn:
+      - DatalakeAdmin
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: LFRamAccess
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Action:
+              - ram:AcceptResourceShareInvitation
+              - ram:RejectResourceShareInvitation
+              - ec2:DescribeAvailabilityZones
+              - ram:EnableSharingWithAwsOrganization
+            Resource: "*"
+      Users:
+        - !Ref DatalakeAdmin
+
+# add DatalakeAdmin as a DL Admin
+  LFDataLakeSettings:
+    DependsOn: DatalakeAdmin
+    Type: AWS::LakeFormation::DataLakeSettings
+    Properties:
+      Admins:
+        - DataLakePrincipalIdentifier: !GetAtt 'DatalakeAdmin.Arn'
+# With the above steps, set up of Datalake Admin is complete
+
+#Change the default permission model --> unchecking IAMallowedPrincipals has to be performed manually in LF Console.
+
+# Create additional Lake Formation users DatalakeUser1Name
+  DatalakeUser1:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Ref DatalakeUser1Name
+      LoginProfile:
+        Password: !Ref DatalakeUser1Password
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonAthenaFullAccess
+      Policies:
+        - PolicyName: DatalakeUserBasic
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - lakeformation:GetDataAccess
+                  - glue:GetDatabase
+                  - glue:GetDatabases
+                  - glue:GetTable
+                  - glue:GetTables
+                  - glue:GetTableVersions
+                  - glue:SearchTables
+                  - glue:UpdateTable
+                  - glue:GetPartitions
+                  - lakeformation:GetResourceLFTags
+                  - lakeformation:ListLFTags
+                  - lakeformation:GetLFTag
+                  - lakeformation:SearchTablesByLFTag
+                  - lakeformation:SearchDatabasesByLFTags
+                Resource: "*"
+
+# register the new S3 bucket with LF as a datalake location using the deault LFService role
+  LFDataLakeLocation1:
+    DependsOn: DatalakeAdmin
+    Type: AWS::LakeFormation::Resource
+    Properties:
+      ResourceArn: !Sub arn:aws:s3:::${S3Bucket}
+      RoleArn: !Sub arn:aws:iam::${AWS::AccountId}:role/aws-service-role/lakeformation.amazonaws.com/AWSServiceRoleForLakeFormationDataAccess
+      UseServiceLinkedRole: true
+
+# Prepare for using governed tables and row-level security. The Lake Formation governed tables, row-level filtering, and storage optimization features require additional configuration before using them.
+
+# API permissions for governed table transaction APIs to be given to DatlakeUser
+  LFGovernedTablePolicy:
+    DependsOn:
+      - DatalakeUser1
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: LFGovernedTablePolicy
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Action:
+              - glue:GetTable
+              - glue:GetPartitions
+              - glue:UpdateTable
+              - lakeformation:StartTransaction
+              - lakeformation:CommitTransaction
+              - lakeformation:CancelTransaction
+              - lakeformation:ExtendTransaction
+              - lakeformation:DescribeTransaction
+              - lakeformation:ListTransactions
+              - lakeformation:GetTableObjects
+              - lakeformation:UpdateTableObjects
+              - lakeformation:DeleteObjectsOnCancel
+              - lakeformation:StartQueryPlanning
+              - lakeformation:GetQueryState
+              - lakeformation:GetQueryStatistics
+              - lakeformation:GetWorkUnits
+              - lakeformation:GetWorkUnitResults
+              - lakeformation:ListTableStorageOptimizers
+              - lakeformation:UpdateTableStorageOptimizer
+            Resource: "*"
+          - Effect: "Allow"
+            Action:
+                - logs:CreateLogGroup
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+            Resource: !Sub arn:aws:logs:*:${AWS::AccountId}:log-group:/aws-lakeformation-acceleration/compaction/logs:*
+      Users:
+        - !Ref DatalakeUser1
